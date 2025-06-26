@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
     :git => "https://github.com/mengqutaoyuan/FBRetainCycleDetector.git",
     :tag => "0.1.4.1"
   }
-  s.source_files  = "FBRetainCycleDetector", "{FBRetainCycleDetector,rcd_fishhook}/**/*.{h,m,mm,c}"
+  s.source_files  = "FBRetainCycleDetector", "{FBRetainCycleDetector,rcd_fishhook}/**/*.{h,m,mm,c,swift}"
 
   mrr_files = [
     'FBRetainCycleDetector/Associations/FBAssociationManager.h',
