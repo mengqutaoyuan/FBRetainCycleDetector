@@ -17,6 +17,7 @@
 #import "FBObjectGraphConfiguration.h"
 #import "FBRetainCycleUtils.h"
 #import "FBRetainCycleDetector.h"
+#import "FBClassSwiftHelpers.h"
 
 @protocol FBRetainCycleDetectorCustomClassDescribable
 
@@ -127,10 +128,14 @@
 {
   NSString *className;
 
-  if ([_object respondsToSelector:@selector(customClassDescription)]) {
+  if (_object && [_object respondsToSelector:@selector(customClassDescription)]) {
     className = [_object customClassDescription];
   } else {
+/* @cwt-override FIXME[T168581563]: -Wnullable-to-nonnull-conversion */
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wnullable-to-nonnull-conversion"
     className = NSStringFromClass([self objectClass]);
+#pragma clang diagnostic pop
   }
 
   if (!className) {
@@ -143,6 +148,12 @@
 - (Class)objectClass
 {
   return object_getClass(_object);
+}
+
+- (bool)isSwift
+{
+    Class cls = self.objectClass;
+    return cls != nil && FBIsSwiftObjectOrClass(cls);
 }
 
 @end

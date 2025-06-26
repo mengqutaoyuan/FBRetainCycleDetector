@@ -15,11 +15,16 @@
 
 #import <UIKit/UIKit.h>
 
+#import <FBRetainCycleDetector/FBRetainCycleDetector-Swift.h>
+
 #import "FBIvarReference.h"
 #import "FBObjectInStructReference.h"
 #import "FBStructEncodingParser.h"
 #import "Struct.h"
 #import "Type.h"
+#import "FBClassSwiftHelpers.h"
+#import "FBObjectReferenceWithLayout.h"
+#import "FBSwiftReference.h"
 
 /**
  If we stumble upon a struct, we need to go through it and check if it doesn't retain some objects.
@@ -30,11 +35,11 @@ static NSArray *FBGetReferencesForObjectsInStructEncoding(FBIvarReference *ivar,
   std::string ivarName = std::string([ivar.name cStringUsingEncoding:NSUTF8StringEncoding]);
   FB::RetainCycleDetector::Parser::Struct parsedStruct =
   FB::RetainCycleDetector::Parser::parseStructEncodingWithName(encoding, ivarName);
-  
+
   std::vector<std::shared_ptr<FB::RetainCycleDetector::Parser::Type>> types = parsedStruct.flattenTypes();
-  
+
   ptrdiff_t offset = ivar.offset;
-  
+
   for (auto &type: types) {
     NSUInteger size, align;
 
@@ -65,21 +70,21 @@ static NSArray *FBGetReferencesForObjectsInStructEncoding(FBIvarReference *ivar,
     offset += whatsMissing;
 
     if (typeEncoding[0] == '@') {
-    
+
       // The index that ivar layout will ask for is going to be aligned with pointer size
 
       // Prepare additional context
       NSString *typeEncodingName = [NSString stringWithCString:type->name.c_str() encoding:NSUTF8StringEncoding];
-      
+
       NSMutableArray *namePath = [NSMutableArray new];
-      
+
       for (auto &name: type->typePath) {
         NSString *nameString = [NSString stringWithCString:name.c_str() encoding:NSUTF8StringEncoding];
         if (nameString) {
           [namePath addObject:nameString];
         }
       }
-      
+
       if (typeEncodingName) {
         [namePath addObject:typeEncodingName];
       }
@@ -93,7 +98,7 @@ static NSArray *FBGetReferencesForObjectsInStructEncoding(FBIvarReference *ivar,
   return references;
 }
 
-NSArray<id<FBObjectReference>> *FBGetClassReferences(Class aCls) {
+static NSArray<id<FBObjectReferenceWithLayout>> *FBGetClassReferences(Class aCls) {
   NSMutableArray<id<FBObjectReference>> *result = [NSMutableArray new];
 
   unsigned int count;
@@ -154,8 +159,8 @@ static NSUInteger FBGetMinimumIvarIndex(__unsafe_unretained Class aCls) {
   return minimumIndex;
 }
 
-static NSArray<id<FBObjectReference>> *FBGetStrongReferencesForClass(Class aCls) {
-  NSArray<id<FBObjectReference>> *ivars = [FBGetClassReferences(aCls) filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(id evaluatedObject, NSDictionary *bindings) {
+static NSArray<id<FBObjectReference>> *FBGetStrongReferencesForObjectiveCClass(Class aCls) {
+  NSArray<id<FBObjectReferenceWithLayout>> *ivars = [FBGetClassReferences(aCls) filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(id evaluatedObject, NSDictionary *bindings) {
     if ([evaluatedObject isKindOfClass:[FBIvarReference class]]) {
       FBIvarReference *wrapper = evaluatedObject;
       return wrapper.type != FBUnknownType;
@@ -163,6 +168,7 @@ static NSArray<id<FBObjectReference>> *FBGetStrongReferencesForClass(Class aCls)
     return YES;
   }]];
 
+  // This only works for objective-c objects
   const uint8_t *fullLayout = class_getIvarLayout(aCls);
 
   if (!fullLayout) {
@@ -172,8 +178,8 @@ static NSArray<id<FBObjectReference>> *FBGetStrongReferencesForClass(Class aCls)
   NSUInteger minimumIndex = FBGetMinimumIvarIndex(aCls);
   NSIndexSet *parsedLayout = FBGetLayoutAsIndexesForDescription(minimumIndex, fullLayout);
 
-  NSArray<id<FBObjectReference>> *filteredIvars =
-  [ivars filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(id<FBObjectReference> evaluatedObject,
+  NSArray<id<FBObjectReferenceWithLayout>> *filteredIvars =
+  [ivars filteredArrayUsingPredicate:[NSPredicate predicateWithBlock:^BOOL(id<FBObjectReferenceWithLayout> evaluatedObject,
                                                                            NSDictionary *bindings) {
     return [parsedLayout containsIndex:[evaluatedObject indexInIvarLayout]];
   }]];
@@ -181,25 +187,76 @@ static NSArray<id<FBObjectReference>> *FBGetStrongReferencesForClass(Class aCls)
   return filteredIvars;
 }
 
+static NSArray<id<FBObjectReference>> *FBGetStrongReferencesForSwiftClass(id obj, Class aCls) {
+    // This contains all the Swift properties, including of it superclasses (recursive until any Objective-c class)
+    NSArray<PropertyIntrospection *> *const properties = [SwiftIntrospector getPropertiesRecursiveWithObject:obj];
+
+    // Since we only want properties for this class, lets create a map and check against `class_copyIvarList`, which isn't recursive
+    NSMutableDictionary<NSString *, PropertyIntrospection *> *const propertyMap = [NSMutableDictionary new];
+    for (PropertyIntrospection *property in properties) {
+        [propertyMap setObject:property forKey:[NSString stringWithFormat:@"%@%i", property.name, (int)property.offset]];
+    }
+
+    NSMutableArray<id<FBObjectReference>> *const result = [NSMutableArray new];
+
+    // class_copyIvarList still works for Swift objects, including pure Swift objects
+    // Maybe a safer way would be to use the Mirror API
+    unsigned int count;
+    Ivar *ivars = class_copyIvarList(aCls, &count);
+
+    for (unsigned int i = 0; i < count; ++i) {
+        Ivar ivar = ivars[i];
+        const char *utf8Name = ivar_getName(ivar);
+        NSString *const ivarName = (utf8Name == NULL) ? nil : [NSString stringWithUTF8String:utf8Name];
+        const ptrdiff_t offset = ivar_getOffset(ivar);
+        NSString *const propertyKey = [NSString stringWithFormat:@"%@%i", ivarName, (int)offset];
+
+        PropertyIntrospection *property = [propertyMap objectForKey:propertyKey];
+        if (property && property.isStrong) {
+            FBSwiftReference *wrapper = [[FBSwiftReference alloc] initWithName:ivarName];
+            [result addObject:wrapper];
+        }
+    }
+    free(ivars);
+
+    return [result copy];
+}
+
+static NSArray<id<FBObjectReference>> *FBGetStrongReferencesForClass(id obj, Class aCls, BOOL shouldIncludeSwiftObjects) {
+    if (aCls == nil) {
+        return @[];
+    }
+    if(shouldIncludeSwiftObjects){
+      if (FBIsSwiftObjectOrClass(aCls)) {
+        return FBGetStrongReferencesForSwiftClass(obj, aCls);
+      } else {
+        return FBGetStrongReferencesForObjectiveCClass(aCls);
+      }
+    } else {
+        return FBGetStrongReferencesForObjectiveCClass(aCls);
+    }
+
+}
+
 NSArray<id<FBObjectReference>> *FBGetObjectStrongReferences(id obj,
-                                                            NSMutableDictionary<Class, NSArray<id<FBObjectReference>> *> *layoutCache) {
+                                                            NSMutableDictionary<NSString*, NSArray<id<FBObjectReference>> *> *layoutCache,
+                                                            BOOL shouldIncludeSwiftObjects) {
   NSMutableArray<id<FBObjectReference>> *array = [NSMutableArray new];
 
   __unsafe_unretained Class previousClass = nil;
   __unsafe_unretained Class currentClass = object_getClass(obj);
 
-  while (previousClass != currentClass) {
+  while (previousClass != currentClass && currentClass) {
     NSArray<id<FBObjectReference>> *ivars;
-    
-    if (layoutCache && currentClass) {
-      ivars = layoutCache[currentClass];
-    }
-    
+
+    const char * className = class_getName(currentClass);
+    NSString *claseName = [[NSString alloc] initWithCString:className encoding:NSUTF8StringEncoding];
+
+    ivars = layoutCache[claseName];
+
     if (!ivars) {
-      ivars = FBGetStrongReferencesForClass(currentClass);
-      if (layoutCache && currentClass) {
-        layoutCache[(id<NSCopying>)currentClass] = ivars;
-      }
+      ivars = FBGetStrongReferencesForClass(obj, currentClass, shouldIncludeSwiftObjects);
+      layoutCache[claseName] = ivars;
     }
     [array addObjectsFromArray:ivars];
 

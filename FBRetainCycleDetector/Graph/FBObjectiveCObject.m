@@ -24,7 +24,7 @@
     return nil;
   }
 
-  NSArray *strongIvars = FBGetObjectStrongReferences(self.object, self.configuration.layoutCache);
+  NSArray *strongIvars = FBGetObjectStrongReferences(self.object, self.configuration.layoutCache, self.configuration.shouldIncludeSwiftObjects);
 
   NSMutableArray *retainedObjects = [[[super allRetainedObjects] allObjects] mutableCopy];
 
@@ -115,9 +115,6 @@
     if (pointerFunctions.acquireFunction == NULL) {
       return NO;
     }
-    if (pointerFunctions.usesWeakReadAndWriteBarriers) {
-      return NO;
-    }
   }
 
   return YES;
@@ -133,18 +130,11 @@
     if (pointerFunctions.acquireFunction == NULL) {
       return NO;
     }
-    if (pointerFunctions.usesWeakReadAndWriteBarriers) {
-      // It's weak - we should not touch it
-      return NO;
-    }
   }
 
   if ([self.object respondsToSelector:@selector(keyPointerFunctions)]) {
     NSPointerFunctions *pointerFunctions = [self.object keyPointerFunctions];
     if (pointerFunctions.acquireFunction == NULL) {
-      return NO;
-    }
-    if (pointerFunctions.usesWeakReadAndWriteBarriers) {
       return NO;
     }
   }

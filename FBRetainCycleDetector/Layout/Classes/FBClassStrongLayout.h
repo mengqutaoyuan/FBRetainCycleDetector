@@ -12,19 +12,16 @@
 extern "C" {
 #endif
 
+@protocol FBObjectReferenceWithLayout;
 @protocol FBObjectReference;
-/**
- @return An array of id<FBObjectReference> objects that will have *all* references
- the object has (also not retained ivars, structs etc.)
- */
-NSArray<id<FBObjectReference>> *_Nonnull FBGetClassReferences(__unsafe_unretained Class _Nullable aCls);
 
 /**
  @return An array of id<FBObjectReference> objects that will have only those references
  that are retained by the object. It also goes through parent classes.
  */
 NSArray<id<FBObjectReference>> *_Nonnull FBGetObjectStrongReferences(id _Nullable obj,
-                                                                     NSMutableDictionary<Class, NSArray<id<FBObjectReference>> *> *_Nullable layoutCache);
+                                                                     NSMutableDictionary<NSString*, NSArray<id<FBObjectReference>> *> *_Nullable layoutCache,
+                                                                     BOOL shouldIncludeSwiftObjects);
 
 #ifdef __cplusplus
 }
